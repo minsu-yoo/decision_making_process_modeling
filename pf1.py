@@ -77,6 +77,9 @@ def figure3(results):
     spikemon_A = results["spike_monitor_A"]
     spikemon_B = results["spike_monitor_B"]
 
+    rate_excit_A =  results['rate_monitor_A']
+    rate_excit_B =  results['rate_monitor_B']
+
 
     all_spike_trains_A = spikemon_A.spike_trains()
     t_max = len(rate_excit_B)/10
