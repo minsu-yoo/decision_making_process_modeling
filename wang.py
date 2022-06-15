@@ -14,7 +14,7 @@ b2.defaultclock.dt = 0.10 * b2.ms
 
 def sim_decision_making_network(N_Excit=384, N_Inhib=96, weight_scaling_factor=5.33,
                                 t_stimulus_start=100 * b2.ms, t_stimulus_duration=9999 * b2.ms, coherence_level=0.,
-                                stimulus_update_interval=30 * b2.ms, mu0_mean_stimulus_Hz=160.,
+                                stimulus_update_interval=30 * b2.ms, mu0_mean_stimulus_Hz=250.,
                                 stimulus_std_Hz=20.,
                                 N_extern=1000, firing_rate_extern=9.8 * b2.Hz,
                                 w_pos=1.90, f_Subpop_size=0.25,  # .15 in publication [1]
@@ -257,7 +257,8 @@ def sim_decision_making_network(N_Excit=384, N_Inhib=96, weight_scaling_factor=5
     syn_Stim2B = Synapses(poissonStimulus2B, excit_pop_B, on_pre="s_AMPA+=w_ext2excit")
     syn_Stim2B.connect(j="i")
 
-    stim_info = []
+    stim_info_a = []
+    stim_info_b = []
 
     @network_operation(dt=stimulus_update_interval)
     def update_poisson_stimulus(t):
@@ -273,16 +274,18 @@ def sim_decision_making_network(N_Excit=384, N_Inhib=96, weight_scaling_factor=5
             poissonStimulus2A.rates = rate_A
             poissonStimulus2B.rates = rate_B
 
-            stim_info.append(rate_A)
+            stim_info_a.append(rate_A)
+            stim_info_b.append(rate_B)
             # print("stim on. rate_A= {}, rate_B = {}".format(rate_A, rate_B))
         else:
             # print("stim off")
             poissonStimulus2A.rates = 0.
             poissonStimulus2B.rates = 0.
 
-            stim_info.append(0)
+            stim_info_a.append(0)
+            stim_info_b.append(0)
             #print('0')
-        return stim_info
+        return stim_info_a, stim_info_b
 
 
     ###############################################################################################
@@ -354,11 +357,109 @@ def sim_decision_making_network(N_Excit=384, N_Inhib=96, weight_scaling_factor=5
     ret_vals["spike_monitor_inhib"] = spike_monitor_inhib
     ret_vals["voltage_monitor_inhib"] = voltage_monitor_inhib
     ret_vals["idx_monitored_neurons_inhib"] = idx_monitored_neurons_inhib
-    ret_vals["stim_info"] = stim_info
+    ret_vals["stim_info_a"] = stim_info_a
+    ret_vals["stim_info_b"] = stim_info_b
 
     #ret_vals['stim_info'] = stim_info
 
 
-
-
     return ret_vals
+
+
+def run_multiple_simulations(
+    f_get_decision_time, coherence_levels, nr_repetitions,
+    max_sim_time=2000 * b2.ms, rate_threshold=10 * b2.Hz, avg_window_width=150 * b2.ms,
+    N_excit=384, N_inhib=96, weight_scaling=5.33, w_pos=1.9, f_Subpop_size=0.25,
+    t_stim_start=0 * b2.ms, t_stim_duration=1000 * b2.ms,
+    mu0_mean_stim_Hz=250., stimulus_StdDev_Hz=20., stim_upd_interval=30 * b2.ms,
+    N_extern=1000, firing_rate_extern=9.8 * b2.Hz):
+
+    """
+
+    Args:
+    f_get_decision_time (Function): a function that implements the decision criterion.
+    coherence_levels (array): A list of coherence levels
+    nr_repetitions (int): Number of repetitions (independent simulations).
+    max_sim_time (Quantity): max simulation time.
+    rate_threshold (Quantity): A firing rate threshold passed to f_get_decision_time.
+    avg_window_width (Quantity): window size when smoothing the firing rates. Passed to f_get_decision_time.
+    N_excit (int): total number of neurons in the excitatory population
+    N_inhib (int): nr of neurons in the inhibitory populations
+    weight_scaling (float): When increasing the number of neurons by 2, the weights should be scaled
+        down by 1/2
+    w_pos (float): Scaling (strengthening) of the recurrent weights within the
+        subpopulations "Left" and "Right"
+    f_Subpop_size (float): fraction of the neurons in the subpopulations "Left" and "Right".
+        #left = #right = int(f_Subpop_size*N_Excit).
+    t_stim_start (Quantity): Start of the stimulation
+    t_stim_duration (Quantity): Duration of the stimulation
+    mu0_mean_stim_Hz (float): maximum mean firing rate of the stimulus if c=+1 or c=-1
+    stimulus_StdDev_Hz (float): std deviation of the stimulating PoissonGroups.
+    stim_upd_interval (Quantity): the mean of the stimulating PoissonGroups is
+        re-sampled at this interval
+    N_extern=1000 (int): Size of the external PoissonGroup (unstructured input)
+    firing_rate_extern (Quantity): Firing frequency of the external PoissonGroup
+
+    Returns:
+
+    results_tuple (array):
+    Five values are returned. [1] time_to_A: A matrix of size
+    [nr_of_c_levels x nr_of_repetitions], where for each entry the time stamp
+    for decision A is recorded. If decision B was made, the entry is 0ms.
+    [2] time_to_B (array): A matrix of size [nr_of_c_levels x nr_of_repetitions],
+    where for each entry the time stamp for decision B is recorded.
+    If decision A was made, the entry is 0ms. [3] count_A (int): Nr of times decision A is made.
+    [4] count_B (int): Nr of times decision B is made.
+    [5] count_No (int): Nr of times no decision is made within the simulation time.
+
+    """
+
+    import pf1 as pf
+
+    nr_coherence = len(coherence_levels)
+    count_A = numpy.zeros(nr_coherence, dtype=numpy.int8)
+    count_B = numpy.zeros(nr_coherence, dtype=numpy.int8)
+    count_No = numpy.zeros(nr_coherence, dtype=numpy.int8)
+
+    time_to_A = numpy.zeros((nr_coherence, nr_repetitions))
+    time_to_B = numpy.zeros((nr_coherence, nr_repetitions))
+
+    for i_coherence in range(nr_coherence):
+
+        c = coherence_levels[i_coherence]
+        print("********************************************")
+        print("coherence_level={}".format(c))
+        for i_run in range(nr_repetitions):
+            results = sim_decision_making_network(
+                N_Excit=N_excit, N_Inhib=N_inhib, weight_scaling_factor=weight_scaling,
+                w_pos=w_pos, f_Subpop_size=f_Subpop_size,
+                t_stimulus_start=t_stim_start, t_stimulus_duration=t_stim_duration, coherence_level=c,
+                max_sim_time=max_sim_time, stop_condition_rate=None,
+                mu0_mean_stimulus_Hz=mu0_mean_stim_Hz, stimulus_std_Hz=stimulus_StdDev_Hz,
+                stimulus_update_interval=stim_upd_interval,
+                N_extern=1000, firing_rate_extern=9.5 * b2.Hz,
+            )
+
+            pf.figure3(results)
+
+
+            t_A, t_B = f_get_decision_time(results["rate_monitor_A"],
+                                           results["rate_monitor_B"],
+                                           avg_window_width, rate_threshold)
+            time_to_A[i_coherence, i_run] = t_A
+            time_to_B[i_coherence, i_run] = t_B
+            print("t_A={}, t_B={}".format(t_A, t_B))
+            if (t_A > 0) and (t_B > 0.):
+                print("no decision/error: f_get_decision_time returns > 0 for A and B ")
+                count_No[i_coherence] += 1
+            elif(t_A == 0) and (t_B == 0):
+                print("no decision")
+                count_No[i_coherence] += 1
+            elif t_A > 0.:
+                print("decision: A")
+                count_A[i_coherence] += 1
+            else:
+                print("decision: B")
+                count_B[i_coherence] += 1
+
+    return time_to_A, time_to_B, count_A, count_B, count_No
